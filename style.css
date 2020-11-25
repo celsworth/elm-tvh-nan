@@ -25,7 +25,7 @@ th {
   background-color: #b0b0ee;
 }
 
-td.next {
+.next {
   font-size: 0.75em;
 }
 
@@ -35,6 +35,11 @@ b {
 
 em {
   margin-left: 5px;
+}
+
+.recording {
+  margin-left: 5px;
+  font-size: 0.8em;
 }
 
 img {

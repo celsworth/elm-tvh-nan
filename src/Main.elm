@@ -29,7 +29,8 @@ type alias Model =
     { time : Time.Posix
     , zone : Time.Zone
     , channels : List Channel
-    , events : List Event
+    , epgEvents : List EpgEvent
+    , dvrEvents : List DvrEvent
     }
 
 
@@ -41,13 +42,19 @@ type alias Channel =
     }
 
 
-type alias Event =
-    { title : String
+type alias EpgEvent =
+    { id : Int
+    , title : String
     , subtitle : Maybe String
     , episode : Maybe String
     , channelUuid : String
     , startTime : Int
     , stopTime : Int
+    }
+
+
+type alias DvrEvent =
+    { broadcast : Int
     }
 
 
@@ -57,7 +64,8 @@ type Msg
     | AdjustTimeZone Time.Zone
     | GotChannels (Result Http.Error (List Channel))
     | GetEpg
-    | GotEpg (Result Http.Error (List Event))
+    | GotEpg (Result Http.Error (List EpgEvent))
+    | GotDvr (Result Http.Error (List DvrEvent))
 
 
 
@@ -69,7 +77,8 @@ init flags =
     ( { time = Time.millisToPosix 0
       , zone = Time.utc
       , channels = []
-      , events = []
+      , epgEvents = []
+      , dvrEvents = []
       }
     , Cmd.batch
         [ getChannels
@@ -84,12 +93,7 @@ init flags =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Time.every 500 Tick
-
-
-isEventInPast : Model -> Event -> Bool
-isEventInPast model event =
-    event.stopTime < (Time.posixToMillis model.time // 1000)
+    Time.every 1000 Tick
 
 
 
@@ -100,7 +104,7 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     let
         shouldGetEpg =
-            if List.any (isEventInPast model) model.events then
+            if List.any (isEventInPast model) model.epgEvents then
                 getEpg
 
             else
@@ -127,11 +131,23 @@ update msg model =
             ( model, getEpg )
 
         GotEpg (Ok newEvents) ->
-            ( { model | events = newEvents }, Cmd.none )
+            ( { model | epgEvents = newEvents }, getDvr )
 
         GotEpg (Err _) ->
             -- display error?
             ( model, Cmd.none )
+
+        GotDvr (Ok newEvents) ->
+            ( { model | dvrEvents = newEvents }, Cmd.none )
+
+        GotDvr (Err _) ->
+            -- display error?
+            ( model, Cmd.none )
+
+
+isEventInPast : Model -> EpgEvent -> Bool
+isEventInPast model event =
+    event.stopTime < (Time.posixToMillis model.time // 1000)
 
 
 
@@ -155,7 +171,7 @@ channelTableRow : Model -> Channel -> Html Msg
 channelTableRow model channel =
     let
         channelEvents =
-            List.filter (\e -> e.channelUuid == channel.uuid) model.events
+            List.filter (\e -> e.channelUuid == channel.uuid) model.epgEvents
     in
     tr []
         [ channelTableIconCell channel
@@ -166,45 +182,43 @@ channelTableRow model channel =
 
 channelTableIconCell : Channel -> Html Msg
 channelTableIconCell channel =
-    td []
-        [ img [ title channel.name, src channel.icon ] []
-        ]
+    td [] [ img [ title channel.name, src channel.icon ] [] ]
 
 
-channelTableNowCell : Model -> List Event -> Channel -> Html Msg
+channelTableNowCell : Model -> List EpgEvent -> Channel -> Html Msg
 channelTableNowCell model events channel =
     let
         now =
             events
                 |> List.head
-                |> Maybe.map (eventTags True model)
+                |> Maybe.map (epgEventTags True model)
                 |> Maybe.withDefault []
     in
     td [] now
 
 
-channelTableNextCell : Model -> List Event -> Channel -> Html Msg
+channelTableNextCell : Model -> List EpgEvent -> Channel -> Html Msg
 channelTableNextCell model events channel =
     let
         next1 =
             events
                 |> List.drop 1
                 |> List.head
-                |> Maybe.map (eventTags False model)
+                |> Maybe.map (epgEventTags False model)
                 |> Maybe.withDefault []
 
         next2 =
             events
                 |> List.drop 2
                 |> List.head
-                |> Maybe.map (eventTags False model)
+                |> Maybe.map (epgEventTags False model)
                 |> Maybe.withDefault []
     in
     td [ class "next" ] (next1 ++ [ br [] [] ] ++ next2)
 
 
-eventTags : Bool -> Model -> Event -> List (Html Msg)
-eventTags now model event =
+epgEventTags : Bool -> Model -> EpgEvent -> List (Html Msg)
+epgEventTags now model event =
     let
         elapsed =
             toFloat <| (Time.posixToMillis model.time // 1000) - event.startTime
@@ -214,6 +228,9 @@ eventTags now model event =
 
         pct =
             elapsed / duration * 100.0
+
+        recording =
+            List.any (\b -> b.broadcast == event.id) model.dvrEvents
 
         maybeProgressBar =
             if now then
@@ -226,6 +243,7 @@ eventTags now model event =
         [ Just <| startTimeTag model event.startTime
         , Just <| text event.title
         , episodeTag event.episode event.subtitle
+        , recordingTag recording
         , maybeProgressBar
         ]
 
@@ -235,7 +253,7 @@ eventProgressBar donePercent =
     div [ class "progress_container" ]
         [ div
             [ class "progress_fill"
-            , style "width" (String.fromFloat donePercent ++ "%")
+            , style "width" <| String.fromFloat donePercent ++ "%"
             ]
             []
         ]
@@ -243,12 +261,16 @@ eventProgressBar donePercent =
 
 startTimeTag : Model -> Int -> Html Msg
 startTimeTag model startTime =
+    let
+        posixStart =
+            Time.millisToPosix <| startTime * 1000
+    in
     b []
         [ text <|
             DF.format
                 [ DF.hourMilitaryFixed, DF.text ":", DF.minuteFixed ]
                 model.zone
-                (Time.millisToPosix (startTime * 1000))
+                posixStart
         ]
 
 
@@ -265,6 +287,15 @@ episodeTag episode subtitle =
         Just <| em [] [ text <| "(" ++ String.join " - " parts ++ ")" ]
 
 
+recordingTag : Bool -> Maybe (Html Msg)
+recordingTag bool =
+    if bool then
+        Just <| span [ class "recording" ] [ text "🔴" ]
+
+    else
+        Nothing
+
+
 
 -- TVHEADEND JSON INTEGRATION
 
@@ -279,7 +310,8 @@ getChannels =
 
 channelsDecoder : JD.Decoder (List Channel)
 channelsDecoder =
-    JD.field "entries" (JD.list channelDecoder)
+    JD.list channelDecoder
+        |> JD.field "entries"
         |> JD.map (List.sortBy .number)
 
 
@@ -292,6 +324,7 @@ channelDecoder =
         |> Pipeline.required "icon_public_url" JD.string
 
 
+getEpg : Cmd Msg
 getEpg =
     Http.get
         { url = "/api/epg/events/grid?limit=500"
@@ -299,14 +332,15 @@ getEpg =
         }
 
 
-epgDecoder : JD.Decoder (List Event)
+epgDecoder : JD.Decoder (List EpgEvent)
 epgDecoder =
-    JD.field "entries" (JD.list eventDecoder)
+    JD.list epgEventDecoder |> JD.field "entries"
 
 
-eventDecoder : JD.Decoder Event
-eventDecoder =
-    JD.succeed Event
+epgEventDecoder : JD.Decoder EpgEvent
+epgEventDecoder =
+    JD.succeed EpgEvent
+        |> Pipeline.required "eventId" JD.int
         |> Pipeline.required "title" JD.string
         |> Pipeline.optional "subtitle" (JD.map Just JD.string) Nothing
         |> Pipeline.custom episodeDecoder
@@ -325,3 +359,21 @@ episodeDecoder =
 episodeString : Int -> Int -> String
 episodeString seasonNumber episodeNumber =
     String.fromInt seasonNumber ++ "x" ++ String.fromInt episodeNumber
+
+
+getDvr : Cmd Msg
+getDvr =
+    Http.get
+        { url = "/api/dvr/entry/grid_upcoming"
+        , expect = Http.expectJson GotDvr dvrDecoder
+        }
+
+
+dvrDecoder : JD.Decoder (List DvrEvent)
+dvrDecoder =
+    JD.list dvrEventDecoder |> JD.field "entries"
+
+
+dvrEventDecoder : JD.Decoder DvrEvent
+dvrEventDecoder =
+    JD.succeed DvrEvent |> Pipeline.required "broadcast" JD.int
