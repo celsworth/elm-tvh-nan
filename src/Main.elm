@@ -214,7 +214,7 @@ channelTableNextCell model events channel =
                 |> Maybe.map (epgEventTags False model)
                 |> Maybe.withDefault []
     in
-    td [ class "next" ] (next1 ++ [ br [] [] ] ++ next2)
+    td [ class "next" ] [ div [] next1, div [] next2 ]
 
 
 epgEventTags : Bool -> Model -> EpgEvent -> List (Html Msg)
